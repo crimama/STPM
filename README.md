@@ -1,5 +1,10 @@
 # student-teacher feature pyramid matching for anomaly detection
 
+# 학습 
+```
+python Main.py -model {STPM} -loss_function {MKD} -Class {bottle}
+```
+
 # 실험 결과 
 ## 모델에 따른 성능 비교 
 - STPM 
