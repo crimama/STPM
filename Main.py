@@ -11,12 +11,15 @@ import torch.nn as nn
 import torch.nn.functional as F 
 from torch.utils.data import DataLoader 
 from torchvision import transforms 
+from IPython.display import clear_output
 import wandb 
 import argparse 
 
-
 from src import Datadir_init,MVtecADDataset
-from src import ResNet18
+from src import ResNet18,get_networks
+from src import STPM_detection, mkd_detection
+from src import STPMLoss,MKDLoss
+
 
 def load_gt(root, cls):
     gt = []
@@ -33,7 +36,7 @@ def load_gt(root, cls):
 def preprocess(cfg,augmentation=None):
     #mk save dir 
     try:
-        os.mkdir(f"./Save_models/{cfg['class']}")
+        os.mkdir(f"./Save_models/{cfg['model']}_{cfg['loss_function']}/{cfg['class']}")
     except:
         pass
     #Seed fix 
@@ -60,14 +63,7 @@ def preprocess(cfg,augmentation=None):
     test_loader = DataLoader(test_dset,batch_size=cfg['batch_size'],shuffle=False)
     return train_loader,valid_loader,test_loader,true_gt,test_labels 
 
-def loss_fn(f_t,f_s):
-    total_loss = 0 
-    for t,s in zip(f_t,f_s):
-        t,s = F.normalize(t,dim=1),F.normalize(s,dim=1)
-        total_loss += torch.sum((t.type(torch.float32) - s.type(torch.float32)) ** 2, 1).mean()
-    return total_loss
-
-    
+   
 def make_transform():
     transform = transforms.Compose([
         transforms.Resize([256, 256]),
@@ -76,7 +72,15 @@ def make_transform():
     ])
     return transform
 
-def train_epoch(student,teacher,train_loader,optimizer,cfg):
+def make_lossfunction(loss_function):
+    if loss_function == 'mkd':
+        return MKDLoss
+    else:
+        return STPMLoss         
+
+
+
+def train_epoch(student,teacher,train_loader,criterion,optimizer,cfg):
     teacher.eval()
     student.train()
     train_loss = [] 
@@ -87,7 +91,7 @@ def train_epoch(student,teacher,train_loader,optimizer,cfg):
             feat_t = teacher(batch_imgs)
         feat_s = student(batch_imgs)
 
-        loss = loss_fn(feat_t,feat_s)
+        loss = criterion(feat_t,feat_s)
         optimizer.zero_grad()
         loss.backward()
         optimizer.step() 
@@ -95,49 +99,38 @@ def train_epoch(student,teacher,train_loader,optimizer,cfg):
         train_loss.append(loss.detach().cpu().numpy())
     return train_loss 
 
-def test_score(student,teacher,loader):
+def valid_epoch(student,teacher,valid_loader,criterion,cfg):
     teacher.eval()
     student.eval()
-    loss_map = np.zeros((len(loader.dataset), 64, 64))
-    i = 0 
-    for batch_imgs,_ in loader:
+    valid_loss = [] 
+    for batch_imgs,_ in valid_loader:
         batch_imgs = batch_imgs.to(cfg['device']).type(torch.float32)
+
         with torch.no_grad():
-            feat_s = student(batch_imgs)
             feat_t = teacher(batch_imgs)
-        score_map = 1.
-        for t,s in zip(feat_t,feat_s):
-            t,s = F.normalize(t,dim=1),F.normalize(s,dim=1)
-            sm = torch.sum((t - s) ** 2, 1, keepdim=True)
-            sm = F.interpolate(sm, size=(64, 64), mode='bilinear', align_corners=False)
-            # aggregate score map by element-wise product
-            score_map = score_map * sm
-        loss_map[i: i + batch_imgs.size(0)] = score_map.squeeze().cpu().data.numpy()
-        i += batch_imgs.size(0)
-    return loss_map 
+        feat_s = student(batch_imgs)
+
+        loss = criterion(feat_t,feat_s)
 
 
-def roc(labels, scores):
-    fpr, tpr, _ = roc_curve(labels, scores)
-    roc_auc = auc(fpr, tpr)
-    return roc_auc    
-def test_inference(teacher,student,test_loader,true_gt,test_labels):
-    scores = test_score(teacher,student,test_loader)
-    scores = [cv2.resize(i,dsize=(256,256)) for i in scores]
-    scores = np.stack(scores)
-    pixel_auroc = roc(true_gt.flatten(),scores.flatten())
-    image_auroc = roc(test_labels,scores.max(-1).max(-1))
-    return pixel_auroc,image_auroc 
+        valid_loss.append(loss.detach().cpu().numpy())
+    return valid_loss     
+
+
 
 def parse_arguments():
     parser = argparse.ArgumentParser()
     
     
     parser.add_argument('-Class')
+    parser.add_argument('-model')
+    parser.add_argument('-loss_function')
     args = parser.parse_args() 
     return args 
 
 if __name__ == "__main__":
+
+#Configuration 
     cfg = {} 
     cfg['img_size']= 256 
     cfg['class_name'] = 'bottle'
@@ -147,23 +140,32 @@ if __name__ == "__main__":
     cfg['device'] = 'cuda:0'
     cfg['seed'] = 0 
     cfg['root'] = './Dataset'
-    cfg['class'] = 'transistor'
-    
-    args = parse_arguments()   
-    cfg['class'] = args.Class
-    wandb.init(project='STPM2',name=cfg['class'])
-
+    cfg['class'] = 'bottle'
+    cfg['lambda'] = 0.01
+    cfg['model'] = 'STPM'
+    cfg['loss_function'] = 'MKD'
     device = cfg['device']
-    student = ResNet18(Pretrained=False).to(device)
-    teacher = ResNet18(Pretrained=True).to(device)
 
-    criterion = nn.MSELoss()
-    optimizer = torch.optim.Adam(student.parameters(),lr=cfg['lr'])
-    #scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,T_max=100,eta_min=0)
-    #scaler = torch.cuda.amp.GradScaler()
+    args = parse_arguments()
+    cfg['class'] = args.Class
+    cfg['model'] = args.model
+    cfg['loss_function'] = args.loss_function
 
+#Wandb 
+    wandb.init(project=f"{cfg['model']}_{cfg['loss_function']}",name=cfg['class'])
+
+#Call 
+    student,teacher = get_networks(cfg['model'])
     transform = make_transform()
     train_loader,valid_loader,test_loader,true_gt,test_labels = preprocess(cfg,transform)
+
+
+
+    criterion = make_lossfunction(cfg['loss_function'])(cfg['model'])
+    optimizer = torch.optim.Adam(student.parameters(),lr=cfg['lr'])
+    detector = STPM_detection(test_loader,cfg['model'],cfg)
+    clear_output()
+
 
     total_train_loss = [] 
     total_valid_loss = [] 
@@ -171,28 +173,31 @@ if __name__ == "__main__":
     print('Training start')
 
     for epoch in tqdm(range(cfg['Epochs'])):
-        train_loss = train_epoch(student,teacher,train_loader,optimizer,cfg)
-        valid_loss = test_score(student,teacher,train_loader).mean()
+        train_loss = train_epoch(student,teacher,train_loader,criterion,optimizer,cfg)
+        valid_loss = valid_epoch(student,teacher,valid_loader,criterion,cfg)
 
         print(f'\t epoch : {epoch+1} train loss : {np.mean(train_loss):.3f}')
-        print(f'\t epoch : {epoch+1} valid loss : {valid_loss.item():.3f}')
+        print(f'\t epoch : {epoch+1} valid loss : {np.mean(valid_loss):.3f}')
 
         total_train_loss.append(train_loss)
         total_valid_loss.append(valid_loss)
 
-    #check point 
-        if valid_loss < best_valid_loss:
-            torch.save(student,f"./Save_models/{cfg['class']}/best.pt")
-            best_valid_loss = valid_loss 
-            print(f'\t Model save : {epoch} | best loss : {best_valid_loss :.3f}')
-
         
-        pixel_auroc,image_auroc = test_inference(teacher,student,test_loader,true_gt,test_labels)
+        #image_auroc = detector.auroc(teacher,student)
+        pixel_auroc,image_auroc  = detector.test_inference(teacher,student,test_loader,true_gt,test_labels)
         print(f"\t Pixel AUROC : {pixel_auroc:.3f}")
         print(f"\t Image AUROC : {image_auroc:.3f}")
 
-        wandb.log({"train_loss":train_loss,
-                    "valid_loss":valid_loss,
-                    'Pixel AUROC' :pixel_auroc,
+
+    #check point 
+        if np.mean(valid_loss) < best_valid_loss:
+            torch.save(student,f"./Save_models/{cfg['model']}_{cfg['loss_function']}/{cfg['class']}/best.pt")
+            best_valid_loss = np.mean(valid_loss) 
+            print(f'\t Model save : {epoch} | best loss : {best_valid_loss :.3f}')
+
+        train_loss = np.mean(train_loss)
+        valid_loss = np.mean(valid_loss)
+        wandb.log({ 'loss'   : train_loss,
+                    'valid_loss'  : valid_loss,
+                    'Pixel AUROC' : pixel_auroc,
                     'image_auroc' : image_auroc})
-    
