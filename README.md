@@ -4,14 +4,26 @@
 ```
 python Main.py -model {STPM} -loss_function {MKD} -Class {bottle}
 ```
+# 실험 세팅 
+- STPM 
+  -  Teacher : Pretrained ResNet18
+  -  Student : ResNet18 
+  -  Loss : MSE (normalized Feature) 
+- MKD 
+  -  Teacher : Pretrained Vgg16 
+  -  Student : smaller Vgg16 
+  -  Loss : MSE + Cosine Similarity 
+
+- 모델과 Loss function을 제외하곤 모두 동일한 세팅에서 진행, AUROC 계산 방식, Optimizer ,Learning rate 모두 동일하게 사용 
+- Metric으로는 AUROC 를 사용 
 
 # 실험 결과 
+
+<p align='center'><img src = 'https://user-images.githubusercontent.com/92499881/204203142-3c971b14-c787-4fd9-8625-2956f467b22c.png' width ='70%',height='50%'>
+
 ## 모델에 따른 성능 비교 
-- STPM 
-  -  ResNet18 
-- MKD 
-  -  Teacher : Vgg16, 
-  -  Student : smaller Vgg16 
+
+
 
 <p align='center'><img src = 'https://user-images.githubusercontent.com/92499881/203928717-14529806-56f8-407a-b0a4-572d7ad82803.png' width ='100%',height='50%'>
 
