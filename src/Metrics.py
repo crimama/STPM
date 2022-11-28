@@ -4,7 +4,7 @@ import cv2
 from sklearn.metrics import roc_curve,auc 
 import numpy as np 
 
-class mkd_detection:
+class mkd_detection: #This is only for Anomaly Detection , Segmentation needs more module 
     def __init__(self,test_loader,model,cfg):
         self.test_loader = test_loader 
         self.model = model 
