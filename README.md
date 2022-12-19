@@ -1,10 +1,10 @@
 # student-teacher feature pyramid matching for anomaly detection
 
-# 학습 
+# Training  
 ```
 python Main.py -model {STPM} -loss_function {MKD} -Class {bottle}
 ```
-# 실험 세팅 
+# Experiment setting 
 - STPM 
   -  Teacher : Pretrained ResNet18
   -  Student : ResNet18 
